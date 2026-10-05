@@ -6,10 +6,12 @@ import asyncio
 from collections import Counter
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import statistics
 import sys
 import uuid
 
+from asgiref.sync import sync_to_async
 import httpx
 
 
@@ -44,7 +46,6 @@ def parse_args():
         "--show-id",
         type=int,
         default=int(os.environ["SHOW_ID"]) if os.getenv("SHOW_ID") else None,
-        required=os.getenv("SHOW_ID") is None,
     )
     parser.add_argument(
         "--hot-seat",
@@ -63,25 +64,77 @@ def parse_args():
         type=int,
         default=int(os.getenv("CONCURRENCY", "100")),
     )
+    parser.add_argument(
+        "--setup-local",
+        action="store_true",
+        help=(
+            "Create a fresh local show and test users/tokens in the Django "
+            "database; run this inside the web container."
+        ),
+    )
     args = parser.parse_args()
 
-    if args.show_id <= 0:
+    if args.show_id is not None and args.show_id <= 0:
         parser.error("--show-id must be a positive integer")
+    if args.show_id is None and not args.setup_local:
+        parser.error("--show-id is required unless --setup-local is used")
     if args.concurrency < 2:
         parser.error("--concurrency must be at least 2")
     args.tokens = [token.strip() for token in args.tokens.split(",") if token.strip()]
-    if len(args.tokens) < args.concurrency + 3:
+    if not args.setup_local and len(args.tokens) < args.concurrency + 3:
         parser.error(
             "--tokens/BURST_TOKENS must contain at least "
             f"{args.concurrency + 3} distinct token keys"
         )
-    if len(args.tokens) != len(set(args.tokens)):
+    if not args.setup_local and len(args.tokens) != len(set(args.tokens)):
         parser.error("each supplied token must be unique")
     if not args.hot_seat:
         parser.error("--hot-seat must not be empty")
 
     args.base_url = args.base_url.rstrip("/")
     return args
+
+
+def setup_local_test_data(args):
+    from django.contrib.auth import get_user_model
+    from django.db import transaction
+    from rest_framework.authtoken.models import Token
+
+    from reservations.models import Seat, Show
+
+    seat_numbers = [args.hot_seat]
+    seat_numbers.extend(
+        f"A{number}"
+        for number in range(1, 15)
+        if f"A{number}" != args.hot_seat
+    )
+    required_users = args.concurrency + 3
+
+    with transaction.atomic():
+        show = Show.objects.create(
+            name=f"Local burst test {uuid.uuid4().hex[:12]}",
+            price_paise=25000,
+        )
+        Seat.objects.bulk_create(
+            [
+                Seat(show=show, seat_number=seat_number)
+                for seat_number in seat_numbers
+            ]
+        )
+        users = [
+            get_user_model().objects.create_user(
+                username=f"burst-{uuid.uuid4().hex}"
+            )
+            for _ in range(required_users)
+        ]
+        tokens = [Token.objects.create(user=user) for user in users]
+
+    args.show_id = show.pk
+    args.tokens = [token.key for token in tokens]
+    print(
+        f"Created local test show {show.pk}, "
+        f"{len(seat_numbers)} seats, and {len(tokens)} temporary test users."
+    )
 
 
 class BurstRunner:
@@ -565,6 +618,18 @@ class BurstRunner:
 
 async def main():
     args = parse_args()
+    if args.setup_local:
+        if args.base_url not in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+            raise SystemExit(
+                "--setup-local requires a local base URL; do not use it for remote services."
+            )
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
+        import django
+
+        django.setup()
+        await sync_to_async(setup_local_test_data, thread_sensitive=True)(args)
+
     runner = BurstRunner(args)
     try:
         return await runner.run()

@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-seat_reservation}}
     command: python manage.py runserver 0.0.0.0:8000
     restart: always
     depends_on:

@@ -25,6 +25,13 @@ For a clean local database, run migrations before using the API. The local
 Compose service uses Django's development server. The Docker image itself runs
 Gunicorn and serves collected static assets through WhiteNoise.
 
+Django requires `DATABASE_URL` for its database connection. In Compose, it
+uses the explicit URL from `.env`, or builds the local default URL using
+`POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`; those variables also
+initialize the local PostgreSQL container. For deployment, set the provider's
+`DATABASE_URL`. URL-encode special characters in the URL's username or
+password.
+
 ## API
 
 Business endpoints are available at the assignment's root paths:
@@ -103,18 +110,26 @@ docker compose logs web
 
 The async `httpx` script checks hot-seat contention, concurrent idempotent
 retries, same-key/different-body conflicts, the per-user limit, 5xx responses,
-and show-count reconciliation. Use a fresh show and fresh users/tokens for
-each run; the tests create reservations and do not reset database state.
+and show-count reconciliation. For a local run, execute one command inside the
+web container:
 
-Provide at least `CONCURRENCY + 3` distinct DRF tokens via `BURST_TOKENS`
-(comma-separated). The first `CONCURRENCY` tokens are used for distinct
-hot-seat users; three more are reserved for the idempotency, conflict, and
-per-user-limit checks. The tokens must belong to fresh users for the limit
-check to start from zero confirmed seats.
+```sh
+docker compose exec web python scripts/burst.py --setup-local
+```
 
-```powershell
-$env:BURST_TOKENS = "<token-1>,<token-2>,...,<token-103>"
-python scripts/burst.py --base-url http://localhost:8000 --show-id 1 --hot-seat A1 --concurrency 100
+This mode creates a fresh 14-seat show and enough temporary users/tokens in
+the local Django database, runs the HTTP burst, and prints the show ID. It is
+only for the local Compose service; do not use it against a remote deployment.
+Each run leaves its test show, reservations, and generated users in the local
+database, so use a disposable development database.
+
+For a remote or pre-existing show, provide its ID and at least
+`CONCURRENCY + 3` distinct DRF tokens; the users should be fresh for a clean
+per-user-limit check:
+
+```sh
+python scripts/burst.py --base-url https://your-service.example \
+  --show-id 12 --tokens "token1,token2,..."
 ```
 
 `BASE_URL`, `SHOW_ID`, `HOT_SEAT`, `CONCURRENCY`, and `BURST_TOKENS` may be
@@ -127,7 +142,8 @@ does not prove the service can sustain 20,000 simultaneous connections.
 ## Deployment status
 
 The image is configured for Gunicorn, environment-provided secrets/database
-settings, and WhiteNoise static files. No public deployment URL is configured
+settings (including `DATABASE_URL` for managed PostgreSQL), and WhiteNoise
+static files. No public deployment URL is configured
 in this repository yet; deploy the image with a managed PostgreSQL database,
 set the production environment variables, run migrations, and then provide
 the resulting URL to the reviewers.

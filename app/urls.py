@@ -8,5 +8,5 @@ urlpatterns = [
     path("api/health/live/", live, name="health-live"),
     path("api/health/ready/", ready, name="health-ready"),
     path("metrics", metrics, name="metrics"),
-    path("api/", include("reservations.urls")),
+    path("", include("reservations.urls")),
 ]
