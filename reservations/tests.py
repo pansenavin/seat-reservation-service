@@ -1,20 +1,33 @@
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from unittest.mock import MagicMock, patch
-
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, OperationalError, close_old_connections
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
-
+from rest_framework.authtoken.models import Token
 from prometheus_client import REGISTRY
-
 from .models import Reservation, ReservationSeat, Seat, Show
+
+
+class TestIdentityAPIClient(APIClient):
+    """Authenticate test requests from fixture user IDs without HTTP headers."""
+
+    def generic(self,method,path,data="",content_type="application/octet-stream",secure=False,**extra):
+        user_id = extra.pop("HTTP_X_USER_ID", None)
+        if user_id and str(user_id).isascii() and str(user_id).isdecimal():
+            user = get_user_model()(pk=int(user_id))
+            self.force_authenticate(user=user)
+        else:
+            self.force_authenticate(user=None)
+        return super().generic(method,path,data=data,content_type=content_type,secure=secure,**extra)
 
 
 class ShowAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.create_url = "/api/shows/"
+        self.client.force_authenticate(user=get_user_model()(pk=1, is_staff=True, is_active=True))
+        self.create_url = "/shows"
 
     def test_create_show_and_seats(self):
         response = self.client.post(
@@ -39,6 +52,38 @@ class ShowAPITests(TestCase):
         )
         self.assertEqual(Show.objects.count(), 1)
         self.assertEqual(Seat.objects.count(), 3)
+
+    def test_show_creation_requires_admin_access(self):
+        response = APIClient().post(
+            "/shows",
+            {
+                "name": "Admin-only show",
+                "seats": ["A1"],
+                "price_paise": 100,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Show.objects.count(), 0)
+
+    def test_staff_token_can_create_show_at_assignment_route(self):
+        admin_user = get_user_model().objects.create_user(username="show-admin",is_staff=True)
+        token = Token.objects.create(user=admin_user)
+
+        response = APIClient().post(
+            "/shows",
+            {
+                "name": "Friday Night",
+                "seats": ["A1"],
+                "price_paise": 25000,
+            },
+            format="json",
+            HTTP_AUTHORIZATION=f"Token {token.key}",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Show.objects.get().name, "Friday Night")
 
     def test_invalid_create_requests_return_400(self):
         valid = {
@@ -110,7 +155,7 @@ class ShowAPITests(TestCase):
             status=Seat.Status.CONFIRMED,
         )
 
-        response = self.client.get(f"{self.create_url}{show.pk}/")
+        response = self.client.get(f"{self.create_url}/{show.pk}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -142,7 +187,7 @@ class ShowAPITests(TestCase):
             ]
         )
 
-        response = self.client.get(f"{self.create_url}{show.pk}/")
+        response = self.client.get(f"{self.create_url}/{show.pk}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -152,7 +197,7 @@ class ShowAPITests(TestCase):
         self.assertEqual(len(response.json()["seats"]), 5)
 
     def test_get_nonexistent_show_returns_json_404(self):
-        response = self.client.get(f"{self.create_url}999999/")
+        response = self.client.get(f"{self.create_url}/999999")
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "Not found."})
@@ -160,7 +205,7 @@ class ShowAPITests(TestCase):
 
 class ReservationAPITests(TestCase):
     def setUp(self):
-        self.client = APIClient()
+        self.client = TestIdentityAPIClient()
         self.show = Show.objects.create(name="Avengers", price_paise=25000)
         Seat.objects.bulk_create(
             [
@@ -168,7 +213,7 @@ class ReservationAPITests(TestCase):
                 for seat_number in ("A1", "A2", "A3", "A4", "A5")
             ]
         )
-        self.url = f"/api/shows/{self.show.pk}/reserve/"
+        self.url = f"/shows/{self.show.pk}/reserve"
 
     def post_reservation(self, seats, key="request-123", user_id="123"):
         return self.client.post(
@@ -285,6 +330,32 @@ class ReservationAPITests(TestCase):
             Seat.Status.AVAILABLE,
         )
 
+    @override_settings(MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW=1)
+    def test_per_user_seat_limit_uses_configured_setting(self):
+        first = self.post_reservation(["A1"])
+        second = self.post_reservation(["A2"], key="configured-limit")
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json(), {"error": "per_user_limit"})
+
+    def test_amount_above_model_field_maximum_is_rejected(self):
+        self.show.price_paise = 1_100_000_000
+        self.show.save(update_fields=("price_paise",))
+
+        response = self.post_reservation(["A1", "A2"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "reservation_amount_too_large"})
+        self.assertEqual(Reservation.objects.count(), 0)
+        self.assertEqual(
+            Seat.objects.filter(
+                show=self.show,
+                status=Seat.Status.AVAILABLE,
+            ).count(),
+            5,
+        )
+
     def test_missing_or_invalid_identity_and_idempotency_key_are_rejected(self):
         missing_user = self.client.post(
             self.url,
@@ -307,16 +378,54 @@ class ReservationAPITests(TestCase):
             HTTP_IDEMPOTENCY_KEY="body-user-id",
         )
 
-        self.assertEqual(missing_user.status_code, 400)
+        self.assertEqual(missing_user.status_code, 401)
         self.assertEqual(missing_key.status_code, 400)
-        self.assertEqual(invalid_user.status_code, 400)
+        self.assertEqual(invalid_user.status_code, 401)
         self.assertEqual(body_user_id.status_code, 400)
         self.assertEqual(Reservation.objects.count(), 0)
+
+    def test_token_identity_is_used_and_body_identity_is_rejected(self):
+        user = get_user_model().objects.create_user(username="token-user")
+        token = Token.objects.create(user=user)
+        client = APIClient()
+
+        spoofed_header = client.post(
+            f"/shows/{self.show.pk}/reserve",
+            {"seats": ["A1"]},
+            format="json",
+            HTTP_X_USER_ID="999",
+            HTTP_IDEMPOTENCY_KEY="spoofed-header",
+        )
+        self.assertEqual(spoofed_header.status_code, 401)
+        self.assertEqual(Reservation.objects.count(), 0)
+
+        response = client.post(
+            f"/shows/{self.show.pk}/reserve",
+            {"seats": ["A1"]},
+            format="json",
+            HTTP_AUTHORIZATION=f"Token {token.key}",
+            HTTP_X_USER_ID="999",
+            HTTP_IDEMPOTENCY_KEY="token-derived-user",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["user_id"], user.pk)
+        self.assertEqual(Reservation.objects.get().user_id, user.pk)
+
+        spoofed_body = client.post(
+            f"/shows/{self.show.pk}/reserve",
+            {"seats": ["A2"], "user_id": 999},
+            format="json",
+            HTTP_AUTHORIZATION=f"Token {token.key}",
+            HTTP_IDEMPOTENCY_KEY="token-derived-user-body",
+        )
+        self.assertEqual(spoofed_body.status_code, 400)
+        self.assertEqual(Reservation.objects.count(), 1)
 
     def test_unknown_seat_or_show_is_rejected(self):
         unknown_seat = self.post_reservation(["Z99"])
         unknown_show = self.client.post(
-            "/api/shows/999999/reserve/",
+            "/shows/999999/reserve",
             {"seats": ["A1"]},
             format="json",
             HTTP_X_USER_ID="123",
@@ -372,9 +481,9 @@ class ReservationConcurrencyTests(TransactionTestCase):
             try:
                 if index < 20:
                     start_barrier.wait(timeout=30)
-                client = APIClient()
+                client = TestIdentityAPIClient()
                 response = client.post(
-                    f"/api/shows/{self.show.pk}/reserve/",
+                    f"/shows/{self.show.pk}/reserve",
                     {"seats": ["A1"]},
                     format="json",
                     HTTP_X_USER_ID=str(index + 1),
@@ -427,9 +536,9 @@ class ReservationConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 start_barrier.wait(timeout=30)
-                client = APIClient()
+                client = TestIdentityAPIClient()
                 response = client.post(
-                    f"/api/shows/{self.show.pk}/reserve/",
+                    f"/shows/{self.show.pk}/reserve",
                     {"seats": [seat_number]},
                     format="json",
                     HTTP_X_USER_ID="77",
@@ -464,7 +573,7 @@ class ReservationConcurrencyTests(TransactionTestCase):
 
 class ReservationCancellationAPITests(TestCase):
     def setUp(self):
-        self.client = APIClient()
+        self.client = TestIdentityAPIClient()
         self.show = Show.objects.create(name="Cancellation show", price_paise=25000)
         Seat.objects.bulk_create(
             [
@@ -473,7 +582,7 @@ class ReservationCancellationAPITests(TestCase):
             ]
         )
         response = self.client.post(
-            f"/api/shows/{self.show.pk}/reserve/",
+            f"/shows/{self.show.pk}/reserve",
             {"seats": ["A1", "A2"]},
             format="json",
             HTTP_X_USER_ID="123",
@@ -481,7 +590,7 @@ class ReservationCancellationAPITests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.reservation_id = response.json()["reservation_id"]
-        self.url = f"/api/reservations/{self.reservation_id}/cancel/"
+        self.url = f"/reservations/{self.reservation_id}/cancel"
 
     def cancel_as(self, user_id="123"):
         return self.client.post(self.url, HTTP_X_USER_ID=user_id)
@@ -514,7 +623,7 @@ class ReservationCancellationAPITests(TestCase):
             ],
         )
 
-        details = self.client.get(f"/api/shows/{self.show.pk}/")
+        details = self.client.get(f"/shows/{self.show.pk}")
         self.assertEqual(details.status_code, 200)
         self.assertEqual(
             details.json()["counts"],
@@ -551,7 +660,7 @@ class ReservationCancellationAPITests(TestCase):
 
     def test_missing_reservation_returns_404(self):
         response = self.client.post(
-            "/api/reservations/999999/cancel/",
+            "/reservations/999999/cancel",
             HTTP_X_USER_ID="123",
         )
 
@@ -561,7 +670,7 @@ class ReservationCancellationAPITests(TestCase):
     def test_user_identity_is_required(self):
         response = self.client.post(self.url)
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 401)
         self.assertEqual(
             Reservation.objects.get(pk=self.reservation_id).status,
             Reservation.Status.CONFIRMED,
@@ -602,9 +711,9 @@ class ReservationCancellationConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=30)
-                client = APIClient()
+                client = TestIdentityAPIClient()
                 return client.post(
-                    f"/api/reservations/{self.reservation.pk}/cancel/",
+                    f"/reservations/{self.reservation.pk}/cancel",
                     HTTP_X_USER_ID="123",
                 )
             finally:
@@ -634,8 +743,8 @@ class ReservationCancellationConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=30)
-                return APIClient().post(
-                    f"/api/reservations/{self.reservation.pk}/cancel/",
+                return TestIdentityAPIClient().post(
+                    f"/reservations/{self.reservation.pk}/cancel",
                     HTTP_X_USER_ID="123",
                 )
             finally:
@@ -645,8 +754,8 @@ class ReservationCancellationConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=30)
-                return APIClient().post(
-                    f"/api/shows/{self.show.pk}/reserve/",
+                return TestIdentityAPIClient().post(
+                    f"/shows/{self.show.pk}/reserve",
                     {"seats": ["A1"]},
                     format="json",
                     HTTP_X_USER_ID="456",
@@ -705,7 +814,7 @@ class MetricsEndpointTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
-        self.client = APIClient()
+        self.client = TestIdentityAPIClient()
         self.show = Show.objects.create(name="Metrics show", price_paise=100)
         Seat.objects.bulk_create(
             [
@@ -746,7 +855,7 @@ class MetricsEndpointTests(TransactionTestCase):
         cancelled_before = self.metric_sample("reservations_cancelled_total")
 
         reservation_response = self.client.post(
-            f"/api/shows/{self.show.pk}/reserve/",
+            f"/shows/{self.show.pk}/reserve",
             {"seats": ["A1"]},
             format="json",
             HTTP_X_USER_ID="123",
@@ -756,7 +865,7 @@ class MetricsEndpointTests(TransactionTestCase):
         reservation_id = reservation_response.json()["reservation_id"]
 
         replay_response = self.client.post(
-            f"/api/shows/{self.show.pk}/reserve/",
+            f"/shows/{self.show.pk}/reserve",
             {"seats": ["A1"]},
             format="json",
             HTTP_X_USER_ID="123",
@@ -765,7 +874,7 @@ class MetricsEndpointTests(TransactionTestCase):
         self.assertEqual(replay_response.status_code, 200)
 
         taken_response = self.client.post(
-            f"/api/shows/{self.show.pk}/reserve/",
+            f"/shows/{self.show.pk}/reserve",
             {"seats": ["A1"]},
             format="json",
             HTTP_X_USER_ID="456",
@@ -775,7 +884,7 @@ class MetricsEndpointTests(TransactionTestCase):
 
         for index, seat_number in enumerate(("A2", "A3", "A4")):
             response = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": [seat_number]},
                 format="json",
                 HTTP_X_USER_ID="123",
@@ -784,7 +893,7 @@ class MetricsEndpointTests(TransactionTestCase):
             self.assertEqual(response.status_code, 201)
 
         limit_response = self.client.post(
-            f"/api/shows/{self.show.pk}/reserve/",
+            f"/shows/{self.show.pk}/reserve",
             {"seats": ["A5"]},
             format="json",
             HTTP_X_USER_ID="123",
@@ -793,12 +902,12 @@ class MetricsEndpointTests(TransactionTestCase):
         self.assertEqual(limit_response.status_code, 409)
 
         cancellation_response = self.client.post(
-            f"/api/reservations/{reservation_id}/cancel/",
+            f"/reservations/{reservation_id}/cancel",
             HTTP_X_USER_ID="123",
         )
         self.assertEqual(cancellation_response.status_code, 200)
         repeated_cancellation = self.client.post(
-            f"/api/reservations/{reservation_id}/cancel/",
+            f"/reservations/{reservation_id}/cancel",
             HTTP_X_USER_ID="123",
         )
         self.assertEqual(repeated_cancellation.status_code, 200)
@@ -845,7 +954,7 @@ class MetricsEndpointTests(TransactionTestCase):
             side_effect=IntegrityError("reservation seat insert failed"),
         ):
             response = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": ["A1"]},
                 format="json",
                 HTTP_X_USER_ID="123",

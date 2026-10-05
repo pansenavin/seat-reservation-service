@@ -1,5 +1,9 @@
 from django.db import models
 from django.db.models import Q
+from django.core.validators import MaxValueValidator
+
+
+MAX_AMOUNT_PAISE = 2_147_483_647
 
 
 class Show(models.Model):
@@ -68,7 +72,9 @@ class Reservation(models.Model):
     user_id = models.BigIntegerField()
     idempotency_key = models.CharField(max_length=255)
     request_hash = models.CharField(max_length=255)
-    amount_paise = models.PositiveIntegerField()
+    amount_paise = models.PositiveIntegerField(
+        validators=[MaxValueValidator(MAX_AMOUNT_PAISE)],
+    )
     status = models.CharField(
         max_length=10,
         choices=Status.choices,
@@ -85,8 +91,11 @@ class Reservation(models.Model):
                 name="reservation_user_show_key_uniq",
             ),
             models.CheckConstraint(
-                condition=Q(amount_paise__gte=0),
-                name="reservation_amount_paise_nonnegative",
+                condition=Q(
+                    amount_paise__gte=0,
+                    amount_paise__lte=MAX_AMOUNT_PAISE,
+                ),
+                name="reservation_amount_paise_range",
             ),
         ]
         indexes = [

@@ -51,9 +51,12 @@ def parse_args():
         default=os.getenv("HOT_SEAT", "A1"),
     )
     parser.add_argument(
-        "--user-id",
-        type=int,
-        default=int(os.getenv("USER_ID", "1001")),
+        "--tokens",
+        default=os.getenv("BURST_TOKENS", ""),
+        help=(
+            "Comma-separated DRF token keys for fresh users. Supply at least "
+            "CONCURRENCY + 3 distinct tokens."
+        ),
     )
     parser.add_argument(
         "--concurrency",
@@ -66,10 +69,14 @@ def parse_args():
         parser.error("--show-id must be a positive integer")
     if args.concurrency < 2:
         parser.error("--concurrency must be at least 2")
-    if args.user_id <= 0:
-        parser.error("--user-id must be a positive integer")
-    if args.user_id + args.concurrency >= 9_223_372_036_854_775_807:
-        parser.error("--user-id plus --concurrency exceeds the supported user ID range")
+    args.tokens = [token.strip() for token in args.tokens.split(",") if token.strip()]
+    if len(args.tokens) < args.concurrency + 3:
+        parser.error(
+            "--tokens/BURST_TOKENS must contain at least "
+            f"{args.concurrency + 3} distinct token keys"
+        )
+    if len(args.tokens) != len(set(args.tokens)):
+        parser.error("each supplied token must be unique")
     if not args.hot_seat:
         parser.error("--hot-seat must not be empty")
 
@@ -94,11 +101,11 @@ class BurstRunner:
     async def close(self):
         await self.client.aclose()
 
-    async def request(self, method, path, *, user_id=None, key=None, body=None):
+    async def request(self, method, path, *, token=None, key=None, body=None):
         request_id = str(uuid.uuid4())
         headers = {"X-Request-ID": request_id}
-        if user_id is not None:
-            headers["X-User-ID"] = str(user_id)
+        if token is not None:
+            headers["Authorization"] = f"Token {token}"
         if key is not None:
             headers["Idempotency-Key"] = key
 
@@ -146,11 +153,11 @@ class BurstRunner:
         self.all_results.append(result)
         return result
 
-    async def reserve(self, *, seat, user_id, key):
+    async def reserve(self, *, seat, token, key):
         return await self.request(
             "POST",
-            f"/api/shows/{self.args.show_id}/reserve/",
-            user_id=user_id,
+            f"/shows/{self.args.show_id}/reserve",
+            token=token,
             key=key,
             body={"seats": [seat]},
         )
@@ -158,7 +165,7 @@ class BurstRunner:
     async def fetch_show(self):
         return await self.request(
             "GET",
-            f"/api/shows/{self.args.show_id}/",
+            f"/shows/{self.args.show_id}",
         )
 
     def add_outcome(self, outcome):
@@ -254,7 +261,7 @@ class BurstRunner:
         requests = [
             self.reserve(
                 seat=self.args.hot_seat,
-                user_id=self.args.user_id + index,
+                token=self.args.tokens[index],
                 key=f"burst-hot-{uuid.uuid4()}",
             )
             for index in range(self.args.concurrency)
@@ -294,7 +301,11 @@ class BurstRunner:
         key = f"burst-idempotent-{uuid.uuid4()}"
         results = await asyncio.gather(
             *[
-                self.reserve(seat=seat, user_id=self.args.user_id, key=key)
+                self.reserve(
+                    seat=seat,
+                    token=self.args.tokens[self.args.concurrency],
+                    key=key,
+                )
                 for _ in range(self.args.concurrency)
             ]
         )
@@ -339,12 +350,12 @@ class BurstRunner:
         key = f"burst-conflict-{uuid.uuid4()}"
         first = await self.reserve(
             seat=seats[0],
-            user_id=self.args.user_id + self.args.concurrency,
+            token=self.args.tokens[self.args.concurrency + 1],
             key=key,
         )
         second = await self.reserve(
             seat=seats[1],
-            user_id=self.args.user_id + self.args.concurrency,
+            token=self.args.tokens[self.args.concurrency + 1],
             key=key,
         )
         passed = first.status_code == 201 and second.status_code == 409
@@ -373,12 +384,12 @@ class BurstRunner:
             self.add_outcome(outcome)
             return outcome
 
-        fresh_user_id = uuid.uuid4().int % 9_000_000_000_000_000_000 + 1
+        fresh_user_token = self.args.tokens[self.args.concurrency + 2]
         results = await asyncio.gather(
             *[
                 self.reserve(
                     seat=seat,
-                    user_id=fresh_user_id,
+                    token=fresh_user_token,
                     key=f"burst-limit-{uuid.uuid4()}",
                 )
                 for seat in seats[:request_count]

@@ -1,7 +1,5 @@
 from rest_framework import serializers
-
 from .models import Reservation, Seat, Show
-
 
 class StrictCharField(serializers.CharField):
     def to_internal_value(self, data):
@@ -75,7 +73,7 @@ class ReservationCreateSerializer(serializers.Serializer):
     def to_internal_value(self, data):
         if isinstance(data, dict) and "user_id" in data:
             raise serializers.ValidationError(
-                {"user_id": "User identity must be provided by the request header."}
+                {"user_id": "User identity is derived from the authentication token."}
             )
         return super().to_internal_value(data)
 

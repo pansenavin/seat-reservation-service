@@ -5,10 +5,10 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from django.test import TransactionTestCase
-from rest_framework.test import APIClient
 
 from app.observability import JSONFormatter
 from reservations.models import Reservation, Seat, Show
+from reservations.tests import TestIdentityAPIClient
 
 
 class JSONLogCapture(logging.Handler):
@@ -22,7 +22,7 @@ class JSONLogCapture(logging.Handler):
 
 class RequestIDAndLoggingTests(TransactionTestCase):
     def setUp(self):
-        self.client = APIClient()
+        self.client = TestIdentityAPIClient()
         self.show = Show.objects.create(name="Logging show", price_paise=100)
         Seat.objects.bulk_create(
             [
@@ -63,7 +63,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
 
     def test_error_responses_include_request_id(self):
         response = self.client.get(
-            "/api/shows/999999/",
+            "/shows/999999",
             HTTP_X_REQUEST_ID="not-found-request",
         )
 
@@ -95,7 +95,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
             side_effect=RuntimeError("unexpected failure"),
         ), self.capture_json_logs() as logs:
             response = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": ["A1"]},
                 format="json",
                 HTTP_X_REQUEST_ID="exception-request-id",
@@ -129,7 +129,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
         }
         with self.capture_json_logs() as logs:
             created = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": ["A1"]},
                 format="json",
                 **headers,
@@ -139,7 +139,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
 
         with self.capture_json_logs() as logs:
             replay = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": ["A1"]},
                 format="json",
                 **headers,
@@ -149,7 +149,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
 
         with self.capture_json_logs() as logs:
             conflict = self.client.post(
-                f"/api/shows/{self.show.pk}/reserve/",
+                f"/shows/{self.show.pk}/reserve",
                 {"seats": ["A1"]},
                 format="json",
                 HTTP_X_REQUEST_ID="conflict-request",
@@ -163,7 +163,7 @@ class RequestIDAndLoggingTests(TransactionTestCase):
         reservation_id = created.json()["reservation_id"]
         with self.capture_json_logs() as logs:
             cancelled = self.client.post(
-                f"/api/reservations/{reservation_id}/cancel/",
+                f"/reservations/{reservation_id}/cancel",
                 HTTP_X_REQUEST_ID="cancel-request",
                 HTTP_X_USER_ID="123",
             )

@@ -1,6 +1,8 @@
 from django.db import transaction
 from django.db.models import Count, Q
 from rest_framework import status
+from rest_framework.authentication import SessionAuthentication, TokenAuthentication
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -26,18 +28,9 @@ from .serializers import (
 )
 
 
-def _parse_user_id(value):
-    if value is None or not value.isascii() or not value.isdecimal():
-        return None
-    user_id = int(value)
-    if user_id <= 0 or user_id > 9_223_372_036_854_775_807:
-        return None
-    return user_id
-
-
 class ShowCreateView(APIView):
-    authentication_classes = ()
-    permission_classes = ()
+    authentication_classes = (SessionAuthentication, TokenAuthentication)
+    permission_classes = (IsAdminUser,)
 
     def post(self, request):
         serializer = ShowCreateSerializer(data=request.data)
@@ -65,7 +58,7 @@ class ShowCreateView(APIView):
 
 class ShowDetailView(APIView):
     authentication_classes = ()
-    permission_classes = ()
+    permission_classes = (AllowAny,)
 
     def get(self, request, show_id):
         show = Show.objects.annotate(
@@ -92,17 +85,10 @@ class ShowDetailView(APIView):
 
 
 class ReservationCreateView(APIView):
-    authentication_classes = ()
-    permission_classes = ()
+    authentication_classes = (TokenAuthentication,)
+    permission_classes = (IsAuthenticated,)
 
     def post(self, request, show_id):
-        user_id = _parse_user_id(request.headers.get("X-User-ID"))
-        if user_id is None:
-            return Response(
-                {"detail": "A positive integer X-User-ID header is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         idempotency_key = request.headers.get("Idempotency-Key", "")
         if not idempotency_key.strip() or len(idempotency_key) > 255:
             return Response(
@@ -121,7 +107,7 @@ class ReservationCreateView(APIView):
         try:
             reservation, created = reserve_seats(
                 show_id=show_id,
-                user_id=user_id,
+                user_id=request.user.pk,
                 seat_numbers=seat_numbers,
                 idempotency_key=idempotency_key,
             )
@@ -163,21 +149,14 @@ class ReservationCreateView(APIView):
 
 
 class ReservationCancelView(APIView):
-    authentication_classes = ()
-    permission_classes = ()
+    authentication_classes = (TokenAuthentication,)
+    permission_classes = (IsAuthenticated,)
 
     def post(self, request, reservation_id):
-        user_id = _parse_user_id(request.headers.get("X-User-ID"))
-        if user_id is None:
-            return Response(
-                {"detail": "A positive integer X-User-ID header is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         try:
             reservation, seat_numbers, _ = cancel_reservation(
                 reservation_id=reservation_id,
-                user_id=user_id,
+                user_id=request.user.pk,
             )
         except ReservationNotFound:
             return Response(

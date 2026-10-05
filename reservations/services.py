@@ -2,21 +2,15 @@ import hashlib
 import json
 import logging
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.db.models import Count
 from django.utils import timezone
-
-from .metrics import (
-    RESERVATIONS_CANCELLED,
-    RESERVATIONS_CONFIRMED,
-    increment_declined,
-)
+from .metrics import RESERVATIONS_CANCELLED, RESERVATIONS_CONFIRMED, increment_declined
 from .models import Reservation, ReservationSeat, Seat, Show
 
 logger = logging.getLogger("seat_reservation")
-
-MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW = 4
-MAX_RESERVATION_AMOUNT_PAISE = 2_147_483_647
 
 
 class ReservationError(Exception):
@@ -170,12 +164,18 @@ def _reserve_seats_transaction(*, show_id, user_id, seat_numbers, idempotency_ke
         reservation__user_id=user_id,
         reservation__status=Reservation.Status.CONFIRMED,
     ).aggregate(total=Count("pk"))["total"]
-    if confirmed_seat_count + len(locked_seats) > MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW:
+    if (
+        confirmed_seat_count + len(locked_seats)
+        > settings.MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW
+    ):
         raise UserSeatLimitExceeded
 
     amount_paise = show.price_paise * len(locked_seats)
-    if amount_paise > MAX_RESERVATION_AMOUNT_PAISE:
-        raise ReservationAmountTooLarge
+    amount_field = Reservation._meta.get_field("amount_paise")
+    try:
+        amount_field.clean(amount_paise, None)
+    except ValidationError as error:
+        raise ReservationAmountTooLarge from error
 
     reservation = Reservation.objects.create(
         show=show,
