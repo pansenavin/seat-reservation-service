@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Seat, Show
+from .models import Reservation, Seat, Show
 
 
 class StrictCharField(serializers.CharField):
@@ -64,3 +64,48 @@ class ShowDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Show
         fields = ("id", "name", "price_paise", "counts", "seats")
+
+
+class ReservationCreateSerializer(serializers.Serializer):
+    seats = serializers.ListField(
+        child=StrictCharField(max_length=50, allow_blank=False),
+        allow_empty=False,
+    )
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict) and "user_id" in data:
+            raise serializers.ValidationError(
+                {"user_id": "User identity must be provided by the request header."}
+            )
+        return super().to_internal_value(data)
+
+    def validate_seats(self, seats):
+        if len(seats) != len(set(seats)):
+            raise serializers.ValidationError(
+                "Seat numbers must be unique within a reservation."
+            )
+        return seats
+
+
+class ReservationResponseSerializer(serializers.ModelSerializer):
+    reservation_id = serializers.IntegerField(source="pk", read_only=True)
+    show_id = serializers.IntegerField(read_only=True)
+    seats = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Reservation
+        fields = (
+            "reservation_id",
+            "show_id",
+            "user_id",
+            "seats",
+            "amount_paise",
+            "status",
+        )
+
+    def get_seats(self, reservation):
+        return list(
+            reservation.reservation_seats.select_related("seat")
+            .order_by("seat__seat_number")
+            .values_list("seat__seat_number", flat=True)
+        )
