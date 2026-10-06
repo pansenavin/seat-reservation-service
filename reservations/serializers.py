@@ -101,9 +101,24 @@ class ReservationResponseSerializer(serializers.ModelSerializer):
             "status",
         )
 
-    def get_seats(self, reservation):
+    def get_seats(self, reservation) -> list[str]:
         return list(
             reservation.reservation_seats.select_related("seat")
             .order_by("seat__seat_number")
             .values_list("seat__seat_number", flat=True)
         )
+
+
+class ErrorResponseSerializer(serializers.Serializer):
+    error = serializers.CharField(required=False)
+    detail = serializers.CharField(required=False)
+    seats = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+    )
+
+
+class ReservationCancelResponseSerializer(serializers.Serializer):
+    reservation_id = serializers.IntegerField()
+    status = serializers.CharField()
+    seats = serializers.ListField(child=serializers.CharField())

@@ -5,6 +5,8 @@ from rest_framework.authentication import SessionAuthentication, TokenAuthentica
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 
 from .models import Seat, Show
 from .services import (
@@ -20,6 +22,8 @@ from .services import (
     reserve_seats,
 )
 from .serializers import (
+    ErrorResponseSerializer,
+    ReservationCancelResponseSerializer,
     ReservationCreateSerializer,
     ReservationResponseSerializer,
     ShowCreateSerializer,
@@ -32,6 +36,14 @@ class ShowCreateView(APIView):
     authentication_classes = (SessionAuthentication, TokenAuthentication)
     permission_classes = (IsAdminUser,)
 
+    @extend_schema(
+        request=ShowCreateSerializer,
+        responses={
+            201: ShowCreatedSerializer,
+            400: OpenApiResponse(description="Input validation error."),
+        },
+        tags=["Shows"],
+    )
     def post(self, request):
         serializer = ShowCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -60,6 +72,16 @@ class ShowDetailView(APIView):
     authentication_classes = ()
     permission_classes = (AllowAny,)
 
+    @extend_schema(
+        responses={
+            200: ShowDetailSerializer,
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Show not found.",
+            ),
+        },
+        tags=["Shows"],
+    )
     def get(self, request, show_id):
         show = Show.objects.annotate(
             total_seats=Count("seats"),
@@ -88,6 +110,35 @@ class ReservationCreateView(APIView):
     authentication_classes = (TokenAuthentication,)
     permission_classes = (IsAuthenticated,)
 
+    @extend_schema(
+        request=ReservationCreateSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="Idempotency-Key",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="Unique key for this user's reservation request.",
+            ),
+        ],
+        responses={
+            200: ReservationResponseSerializer,
+            201: ReservationResponseSerializer,
+            400: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Invalid request or reservation amount.",
+            ),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Show not found.",
+            ),
+            409: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Seat conflict, per-user limit, or idempotency conflict.",
+            ),
+        },
+        tags=["Reservations"],
+    )
     def post(self, request, show_id):
         idempotency_key = request.headers.get("Idempotency-Key", "")
         if not idempotency_key.strip() or len(idempotency_key) > 255:
@@ -152,6 +203,21 @@ class ReservationCancelView(APIView):
     authentication_classes = (TokenAuthentication,)
     permission_classes = (IsAuthenticated,)
 
+    @extend_schema(
+        request=None,
+        responses={
+            200: ReservationCancelResponseSerializer,
+            403: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Reservation belongs to another user.",
+            ),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="Reservation not found.",
+            ),
+        },
+        tags=["Reservations"],
+    )
     def post(self, request, reservation_id):
         try:
             reservation, seat_numbers, _ = cancel_reservation(

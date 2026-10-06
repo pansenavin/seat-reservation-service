@@ -23,7 +23,7 @@ docker compose exec web python manage.py createsuperuser
 
 For a clean local database, run migrations before using the API. The local
 Compose service uses Django's development server. The Docker image itself runs
-Gunicorn and serves collected static assets through WhiteNoise.
+Gunicorn for the API service.
 
 Django requires `DATABASE_URL` for its database connection. In Compose, it
 uses the explicit URL from `.env`, or builds the local default URL using
@@ -31,6 +31,11 @@ uses the explicit URL from `.env`, or builds the local default URL using
 initialize the local PostgreSQL container. For deployment, set the provider's
 `DATABASE_URL`. URL-encode special characters in the URL's username or
 password.
+
+## API documentation
+
+With the service running, open Swagger UI at `http://localhost:8000/api/docs/`.
+The OpenAPI schema is available at `http://localhost:8000/api/schema/`.
 
 ## API
 
@@ -141,9 +146,8 @@ does not prove the service can sustain 20,000 simultaneous connections.
 
 ## Deployment status
 
-The image is configured for Gunicorn, environment-provided secrets/database
-settings (including `DATABASE_URL` for managed PostgreSQL), and WhiteNoise
-static files. No public deployment URL is configured
+The image is configured for Gunicorn and environment-provided secrets/database
+settings (including `DATABASE_URL` for managed PostgreSQL). No public deployment URL is configured
 in this repository yet; deploy the image with a managed PostgreSQL database,
 set the production environment variables, run migrations, and then provide
 the resulting URL to the reviewers.
