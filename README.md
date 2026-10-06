@@ -12,6 +12,7 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
+The home page is at `http://localhost:8000/`, with a link to Swagger UI.
 The API listens on `http://localhost:8000`; PostgreSQL and Adminer are also
 available through Compose. Apply migrations in another terminal:
 
@@ -34,7 +35,8 @@ password.
 
 ## API documentation
 
-With the service running, open Swagger UI at `http://localhost:8000/api/docs/`.
+With the service running, open the home page at `http://localhost:8000/` or
+Swagger UI directly at `http://localhost:8000/api/docs/`.
 The OpenAPI schema is available at `http://localhost:8000/api/schema/`.
 
 ## API

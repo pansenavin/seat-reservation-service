@@ -29,6 +29,13 @@ class ShowAPITests(TestCase):
         self.client.force_authenticate(user=get_user_model()(pk=1, is_staff=True, is_active=True))
         self.create_url = "/shows"
 
+    def test_homepage_links_to_swagger_documentation(self):
+        response = APIClient().get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Seat Reservation")
+        self.assertContains(response, 'href="/api/docs/"')
+
     def test_create_show_and_seats(self):
         response = self.client.post(
             self.create_url,
