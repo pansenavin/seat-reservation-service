@@ -13,9 +13,6 @@ COPY . .
 
 EXPOSE 8000
 
-RUN DJANGO_DEBUG=True DJANGO_SECRET_KEY=build-only-not-used-at-runtime \
-    python manage.py collectstatic --noinput
-
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
 
