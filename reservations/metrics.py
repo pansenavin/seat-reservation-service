@@ -1,7 +1,10 @@
 from django.db import DatabaseError
 from django.http import HttpResponse
-from django.views.decorators.http import require_GET
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
+from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
 
 from .models import Seat
 
@@ -37,18 +40,16 @@ def increment_declined(reason):
     RESERVATIONS_DECLINED.labels(reason=reason).inc()
 
 
-@require_GET
-def metrics(request):
-    try:
-        available_seats = Seat.objects.filter(
-            status=Seat.Status.AVAILABLE
-        ).count()
-    except DatabaseError:
-        return HttpResponse(
-            "PostgreSQL is unavailable; metrics could not be collected.\n",
-            status=503,
-            content_type="text/plain; charset=utf-8",
-        )
+class MetricsView(APIView):
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
 
-    SEATS_AVAILABLE.set(available_seats)
-    return HttpResponse(generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    @extend_schema(responses={200: OpenApiTypes.BINARY, 503: OpenApiTypes.STR},tags=["Metrics"])
+    def get(self, request):
+        try:
+            available_seats = Seat.objects.filter(status=Seat.Status.AVAILABLE).count()
+        except DatabaseError:
+            return HttpResponse("PostgreSQL is unavailable; metrics could not be collected", status=503)
+
+        SEATS_AVAILABLE.set(available_seats)
+        return HttpResponse(generate_latest(), content_type=CONTENT_TYPE_LATEST)

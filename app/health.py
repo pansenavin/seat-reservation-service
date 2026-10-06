@@ -1,19 +1,17 @@
-from django.db import DatabaseError, connection
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
+from drf_spectacular.utils import extend_schema
+from rest_framework import serializers
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 
-@require_GET
-def live(request):
-    return JsonResponse({"status": "ok"})
+class HealthResponseSerializer(serializers.Serializer):
+    status = serializers.CharField()
 
+class LiveView(APIView):
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
 
-@require_GET
-def ready(request):
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-    except DatabaseError:
-        return JsonResponse({"status": "not_ready"}, status=503)
-    return JsonResponse({"status": "ready"})
+    @extend_schema(responses={200: HealthResponseSerializer}, tags=["Health"])
+    def get(self, request):
+        return Response({"status": "ok"})
