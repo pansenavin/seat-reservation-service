@@ -1,7 +1,7 @@
 from django.db import DatabaseError
 from django.http import HttpResponse
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.utils import extend_schema
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
@@ -44,30 +44,12 @@ class MetricsView(APIView):
     authentication_classes = ()
     permission_classes = (AllowAny,)
 
-    @extend_schema(
-        responses={
-            200: OpenApiResponse(
-                response=OpenApiTypes.BINARY,
-                description="Prometheus text-format metrics.",
-            ),
-            503: OpenApiResponse(
-                response=OpenApiTypes.STR,
-                description="Metrics unavailable because PostgreSQL is down.",
-            ),
-        },
-        tags=["Metrics"],
-    )
+    @extend_schema(responses={200: OpenApiTypes.BINARY, 503: OpenApiTypes.STR},tags=["Metrics"])
     def get(self, request):
         try:
-            available_seats = Seat.objects.filter(
-                status=Seat.Status.AVAILABLE
-            ).count()
+            available_seats = Seat.objects.filter(status=Seat.Status.AVAILABLE).count()
         except DatabaseError:
-            return HttpResponse(
-                "PostgreSQL is unavailable; metrics could not be collected.\n",
-                status=503,
-                content_type="text/plain; charset=utf-8",
-            )
+            return HttpResponse("PostgreSQL is unavailable; metrics could not be collected", status=503)
 
         SEATS_AVAILABLE.set(available_seats)
         return HttpResponse(generate_latest(), content_type=CONTENT_TYPE_LATEST)
