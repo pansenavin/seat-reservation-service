@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 
@@ -9,19 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() in {"true", "1", "yes"}
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
-try:
-    MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW = int(
-        os.getenv("MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW", "4")
-    )
-except ValueError as error:
-    raise ImproperlyConfigured(
-        "MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW must be a positive integer."
-    ) from error
-if MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW < 1:
-    raise ImproperlyConfigured(
-        "MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW must be a positive integer."
-    )
-
+MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW = int(os.getenv("MAX_CONFIRMED_SEATS_PER_USER_PER_SHOW", "4"))
+    
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
@@ -72,9 +60,6 @@ WSGI_APPLICATION = "app.wsgi.application"
 ASGI_APPLICATION = "app.asgi.application"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ImproperlyConfigured("DATABASE_URL must be set.")
-
 try:
     DATABASES = {
         "default": dj_database_url.parse(
